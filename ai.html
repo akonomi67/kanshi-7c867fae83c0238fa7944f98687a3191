@@ -1,0 +1,69 @@
+<!doctype html><html lang="ja"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow,noarchive"><title>見張り AI用</title>
+<!-- データは data.json (AES-256-GCM, PBKDF2-SHA256 200000回, base64のsalt/iv/ct。ctの末尾16バイトが認証タグ)。パスワードは #pw=... か ?pw=... でも渡せる -->
+<style>body{font:15px/1.5 sans-serif;margin:8px;background:#fff;color:#000}table{border-collapse:collapse}td,th{padding:3px 6px}</style></head><body>
+<div id="lock"><p>パスワード <input id="pw" type="password"> <button onclick="go(document.getElementById('pw').value)">開く</button></p></div>
+<div id="app"></div>
+<script>
+const b=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+function ago(t,now){const m=Math.floor((now-t)/60);return m<60?m+"分前":Math.floor(m/60)+"時間"+(m%60)+"分前"}
+async function go(pw){
+ try{
+  const e=await (await fetch("data.json?"+Date.now())).json();
+  const k0=await crypto.subtle.importKey("raw",new TextEncoder().encode(pw),"PBKDF2",false,["deriveKey"]);
+  const k=await crypto.subtle.deriveKey({name:"PBKDF2",salt:b(e.salt),iterations:e.iter,hash:"SHA-256"},k0,{name:"AES-GCM",length:256},false,["decrypt"]);
+  const d=JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({name:"AES-GCM",iv:b(e.iv)},k,b(e.ct))));
+  if(e.ct!==window.LAST){window.LAST=e.ct;const op=[...document.querySelectorAll("#app details")].map(x=>x.open);render(d);document.querySelectorAll("#app details").forEach((x,i)=>{if(op[i])x.open=true})}document.getElementById("lock").style.display="none";if(!window.TM){window.TM=setInterval(()=>go(pw),20000)}
+ }catch(x){if(window.LAST)return;document.getElementById("app").textContent="開けません（パスワード違い）"}
+}
+const HM=t=>{const x=new Date(t*1000);return String(x.getHours()).padStart(2,"0")+":"+String(x.getMinutes()).padStart(2,"0")};
+function rel(t,now){const m=Math.round((t-now)/60),a=Math.abs(m);const u=a<60?a+"分":Math.floor(a/60)+"時間"+(a%60?a%60+"分":"");return m>=0?u+"後":u+"前"}
+function model(d,now){
+ const T=d.teiki||{rows:[],unknown:[]};const alert=[],today=[],single=[];
+ for(const w of d.windows){const open=w.yk.filter(x=>!x.d);if(!open.length)continue;const idle=now-w.last>1800;
+  single.push({name:w.title||"(無題)",done:w.yk.length-open.length,all:w.yk.length,last:ago(w.last,now),idle:idle,open:open.map(x=>x.t)});
+  if(idle)alert.push({what:w.title||"(無題)",why:"止まっている（最後の動き "+ago(w.last,now)+"）。残り "+open.length+"件"});
+  today.push({at:0,when:"随時",what:(w.title||"(無題)")+"：残り"+open.length+"件",who:"くろこ",st:idle?"late":"soon"})}
+ for(const r of T.rows){if(r.st==="late")alert.push({what:r.name,why:"遅れ／失敗している"});
+  if(r.at||r.st==="late"){const past=r.at&&r.at<now;today.push({at:r.at||0,when:r.at?HM(r.at)+"（"+rel(r.at,now)+"）":"随時",what:r.name,who:r.who,st:r.st==="late"?"late":(past?"done":"soon")})}}
+ if(now-d.generated>900)alert.push({what:"見張りサイト",why:"15分以上更新が止まっている"});
+ today.sort((a,b)=>(a.at||9e12)-(b.at||9e12));
+ const sched=today.filter(x=>x.at),done=sched.filter(x=>x.st==="done").length,late=today.filter(x=>x.st==="late").length;
+ const KW=((d.koutei||{}).watch)||[];
+ return {alert,checks:(T.checks||[]).concat(KW),today,single,teiki:T.rows,unknown:T.unknown,tags:d.tags.filter(t=>now-t.updated>86400).map(t=>t.project),logs:d.worklog,
+  head:['止まっている作業・遅れ '+alert.length+'件','今日の定期 '+sched.length+'件（済み '+done+'）','遅れ '+late+'件','要確認 '+((T.checks||[]).length+KW.length)+'件'],made:d.generated_h}}
+function stopUnits(d){const K=(d.koutei||{rows:[]}).rows,U={};for(const r of K){const k=r[0]+"\u0001"+r[1]+"\u0001"+r[2];(U[k]=U[k]||[]).push(r)}
+ return Object.values(U).filter(g=>g.every(r=>r[10]==="一旦停止"||r[10]==="終了"))}
+function stopHtml(d){const S=stopUnits(d);
+ return '<details><summary>停止中の仕事（'+S.length+'件）</summary><table><tr><th>仕事</th><th>状態</th><th>止めた日</th><th>理由</th><th>誰の指示か</th><th>確かさ</th></tr>'+S.map(g=>{const r=g[0];return '<tr class="it" data-s="stopjob" style="color:#aaa'+(/推定/.test(r[12])?";background:#3b3000":"")+'"><td>'+esc(r[0]+"／"+r[1]+(r[2]?"／"+r[2]:""))+'</td><td>'+esc(r[10])+'</td><td>'+esc(r[11])+'</td><td>'+esc(r[12])+'</td><td>'+esc(r[13])+'</td><td>'+(/推定/.test(r[12])?"推定（要確認）":"確定")+'</td></tr>'}).join('')+'</table></details>'}
+function kouteiHtml(d){const K=(d.koutei||{rows:[]}).rows,g={};for(const r of K){((g[r[0]]=g[r[0]]||{})[r[1]]=g[r[0]][r[1]]||[]).push(r)}
+ let h=stopHtml(d)+'<details><summary>ch別・仕事別の工程と担当（'+K.length+'行・要確認 '+K.filter(r=>r[9]!=="確定").length+'）</summary>';
+ for(const f in g){const n=Object.values(g[f]).reduce((a,b)=>a+b.length,0),q=Object.values(g[f]).reduce((a,b)=>a+b.filter(r=>r[9]!=="確定").length,0);
+  h+='<details><summary>'+esc(f)+'（'+n+'行・要確認 '+q+'）</summary>';
+  for(const j in g[f]){const a=g[f][j];h+='<details><summary>'+esc(j)+'（要確認 '+a.filter(r=>r[9]!=="確定").length+'）</summary><table><tr><th>区分</th><th>工程</th><th>細目</th><th>誰が</th><th>運用</th><th>確かさ</th></tr>'+a.map(r=>'<tr class="it" data-s="koutei" style="'+(r[10]!=="動いている"?"color:#aaa;":"")+(r[9]!=="確定"?"background:#3b3000":"")+'"><td>'+esc(r[2])+'</td><td>'+esc(r[3])+'</td><td>'+esc(r[4])+'</td><td>'+esc(r[5])+'</td><td>'+esc(r[10])+'</td><td>'+esc(r[9])+'</td></tr>').join('')+'</table></details>'}
+  h+='</details>'}
+ return h+'</details>'}
+const NM={done:"済",soon:"これから",late:"遅れ"};
+function single1(x){return esc(x.name)+'：済 '+x.done+'/'+x.all+'・'+esc(x.last)+(x.idle?'（30分以上動きなし）':'')+'<br>'+x.open.map(t=>'残 '+esc(t)).join('<br>')}
+function render(d){
+ const now=Date.now()/1000,m=model(d,now);
+ const li=(k,t)=>'<li class="it" data-s="'+k+'">'+t+'</li>';
+ let h='<h1>見張り（AI用・飾りなし）</h1><p>作った時刻: '+esc(m.made)+'</p><ul>'+m.head.map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul>';
+ h+='<h2>どこを読めばよいか（全員が同じ1つの中身）</h2><ul><li>グロック（外から読むだけ）＝この画面（AI用画面）。下の「工程と担当」の表と、定期の表がそれ。</li><li>Claude（くろこ）／Codex／Cursor／Dots（このパソコンで動くAI）＝合言葉なしの手元の写し 秘書\\工程一覧.json（列は「列」、表は「rows」、選び肢は「誰が選び肢」）と 秘書\\定期のやること.json（「シート」が表で1行目が列名）。</li><li>ブラウザで見る人＝人用画面（同じ中身）。</li><li>「運用状態」列＝動いている／一旦停止／終了（止めた日・理由・誰の指示かも列にある）。「要確認：止まっているかも／動き出したかも」は自動の見張り（運用ルール・ショート停止ch.json・タスクスケジューラ・作業ログ30日）で、シートは自動では直さない。正本＝スプレッドシートの「工程」タブ。直すのは工程マップ（このパソコンの http://localhost:18765/）だけ。AIは直接シートを書き換えない。</li></ul><h2>要注意（'+m.alert.length+'件）</h2><ul>'+m.alert.map(a=>li('alert',esc(a.what)+' / '+esc(a.why))).join('')+'</ul>';
+ h+='<h2>要確認（'+m.checks.length+'件）</h2><ul>'+m.checks.map(a=>li('check',esc(a.what)+' / '+esc(a.why))).join('')+'</ul>';
+ h+='<h2>今日やること（'+m.today.length+'件）</h2><table border="1"><tr><th>いつ</th><th>何を</th><th>誰が</th><th>状態</th></tr>'+m.today.map(x=>'<tr class="it" data-s="today"><td>'+esc(x.when)+'</td><td>'+esc(x.what)+'</td><td>'+esc(x.who)+'</td><td>'+NM[x.st]+'</td></tr>').join('')+'</table>';
+ h+='<h2>定期全部（'+m.teiki.length+'件）</h2><table border="1"><tr><th>何を</th><th>誰が</th><th>いつ</th><th>次は</th></tr>'+m.teiki.map(r=>'<tr class="it" data-s="teiki"><td>'+esc(r.name)+'</td><td>'+esc(r.who)+'</td><td>'+esc(r.when)+'</td><td>'+esc(r.next)+'</td></tr>').join('')+'</table>';
+ h+='<h3>頻度不明（'+m.unknown.length+'件）</h3><ul>'+m.unknown.map(u=>li('unknown',esc(u.name))).join('')+'</ul>';
+
+ const KR=(d.koutei||{rows:[]}).rows,SU=stopUnits(d);
+ h+='<h2>停止中の仕事（'+SU.length+'件）</h2><table border="1"><tr><th>仕事</th><th>状態</th><th>止めた日</th><th>理由</th><th>誰の指示か</th><th>確かさ</th></tr>'+SU.map(g=>{const r=g[0];return '<tr class="it" data-s="stopjob"><td>'+esc(r[0]+"／"+r[1]+(r[2]?"／"+r[2]:""))+'</td><td>'+esc(r[10])+'</td><td>'+esc(r[11])+'</td><td>'+esc(r[12])+'</td><td>'+esc(r[13])+'</td><td>'+(/推定/.test(r[12])?"推定（要確認）":"確定")+'</td></tr>'}).join('')+'</table>';
+ h+='<h2>ch別・仕事別の工程と担当（'+KR.length+'行）</h2><table border="1"><tr>'+((d.koutei||{head:[]}).head||[]).map(x=>'<th>'+esc(x)+'</th>').join('')+'</tr>'+KR.map(r=>'<tr class="it" data-s="koutei">'+r.map(x=>'<td>'+esc(x)+'</td>').join('')+'</tr>').join('')+'</table>';
+ h+='<h2>単発全部（'+m.single.length+'案件）</h2><ul>'+m.single.map(x=>li('single',single1(x))).join('')+'</ul>';
+ h+='<h2>外し忘れ名札（'+m.tags.length+'件）</h2><ul>'+m.tags.map(t=>li('tag',esc(t))).join('')+'</ul>';
+ h+='<h2>作業ログ件名（'+m.logs.length+'件）</h2><table border="1">'+m.logs.map(l=>'<tr class="it" data-s="log"><td>'+esc(l.ts.slice(11,16))+'</td><td>'+esc(l.title)+'</td></tr>').join('')+'</table>';
+ document.getElementById("app").innerHTML=h}
+const q=(location.hash.match(/pw=([^&]+)/)||location.search.match(/pw=([^&]+)/));
+if(q)go(decodeURIComponent(q[1]));
+</script></body></html>
